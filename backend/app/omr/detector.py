@@ -433,10 +433,19 @@ class OMRDetector:
                     options_per_question=self.layout.options_per_question,
                     template_type="vidyakashi_25",
                 )
-            target_tl = self.layout.markers["top_left"]
-            target_tr = self.layout.markers["top_right"]
-            target_br = self.layout.markers["bottom_right"]
-            target_bl = self.layout.markers["bottom_left"]
+            elif not has_dark_banner and self.layout.template_type in ("vidyakashi_official", "vidyakashi_100"):
+                self.layout = OMRLayoutConfig(
+                    question_count=self.layout.question_count,
+                    options_per_question=self.layout.options_per_question,
+                    template_type="standard",
+                )
+            target_tl = self.layout.markers.get("top_left", (70, 70))
+            if target_tl[1] > 200:
+                target_tl, target_tr, target_br, target_bl = (70, 70), (1584, 70), (1584, 2268), (70, 2268)
+            else:
+                target_tr = self.layout.markers["top_right"]
+                target_br = self.layout.markers["bottom_right"]
+                target_bl = self.layout.markers["bottom_left"]
             target_marker_pts = np.array([target_tl, target_tr, target_br, target_bl], dtype="float32")
 
             ordered_src = self.order_quad_points(marker_pts)
@@ -611,20 +620,27 @@ class OMRDetector:
     ) -> Dict[str, Any]:
         """
         Extracts multi-feature ink measurements inside the inner bubble region.
-        Samples inner 60-65% radius to guarantee exclusion of printed circular outlines.
+        Samples inner 50% radius to guarantee complete physical exclusion of printed circular borders.
         Measures:
-        - Local background intensity (lighting and shadow invariant)
+        - Local background intensity (lighting, shadow, and camera glare invariant)
         - Mean inner ink contrast
-        - Dark ink pixel ratio
-        - Connected Component Analysis (CCA) for small dots and pen strokes
-        - Largest connected component area and mark centroid coordinates
+        - Core center ink contrast (inner 28% radius, far removed from any border outline)
+        - Dark ink pixel ratio (contrast >= 0.22)
+        - Very dark ink pixel ratio (contrast >= 0.40)
+        - Paper white pixel ratio (contrast < 0.12)
+        - Core dark pixel ratio
+        - Connected Component Analysis (CCA) for dots, pen strokes, and partial marks
+        - Status classification: 'FILLED', 'EMPTY', or 'UNCERTAIN'
         """
-        h_img, w_img = gray_img.shape[:2]
-        inner_scale = 0.60 if radius <= 16 else 0.65
-        inner_r = max(3, int(radius * inner_scale))
+        if len(gray_img.shape) == 3:
+            gray_img = cv2.cvtColor(gray_img, cv2.COLOR_BGR2GRAY)
 
-        # 1. Local background estimation (92nd percentile in surrounding 1.4x box)
-        box_half = max(inner_r + 4, int(radius * 1.4))
+        h_img, w_img = gray_img.shape[:2]
+        inner_r = max(4, int(round(radius * 0.50)))
+        core_r = max(2, int(round(radius * 0.28)))
+
+        # 1. Local background estimation (92nd percentile in surrounding 1.5x box)
+        box_half = max(inner_r + 6, int(radius * 1.5))
         bx1 = max(0, cx - box_half)
         bx2 = min(w_img, cx + box_half)
         by1 = max(0, cy - box_half)
@@ -632,7 +648,7 @@ class OMRDetector:
 
         roi_box = gray_img[by1:by2, bx1:bx2]
         bg_intensity = float(np.percentile(roi_box, 92)) if roi_box.size > 0 else 255.0
-        if bg_intensity <= 15.0:
+        if bg_intensity <= 20.0:
             bg_intensity = 255.0
 
         # 2. Extract inner circular ROI
@@ -644,8 +660,13 @@ class OMRDetector:
         roi_inner = gray_img[y1:y2, x1:x2]
         if roi_inner.size == 0:
             return {
+                "status": "EMPTY",
                 "mean_contrast": 0.0,
+                "core_contrast": 0.0,
                 "dark_pixel_ratio": 0.0,
+                "very_dark_ratio": 0.0,
+                "core_dark_ratio": 0.0,
+                "white_pixel_ratio": 1.0,
                 "max_cc_area": 0,
                 "total_ink_px": 0,
                 "centroid": None,
@@ -659,8 +680,13 @@ class OMRDetector:
         total_inner = len(inner_pixels)
         if total_inner == 0:
             return {
+                "status": "EMPTY",
                 "mean_contrast": 0.0,
+                "core_contrast": 0.0,
                 "dark_pixel_ratio": 0.0,
+                "very_dark_ratio": 0.0,
+                "core_dark_ratio": 0.0,
+                "white_pixel_ratio": 1.0,
                 "max_cc_area": 0,
                 "total_ink_px": 0,
                 "centroid": None,
@@ -668,20 +694,28 @@ class OMRDetector:
                 "total_inner_pixels": 0,
             }
 
-        mean_inner = float(np.mean(inner_pixels))
-        mean_contrast = max(0.0, float((bg_intensity - mean_inner) / bg_intensity))
+        core_mask = np.zeros(roi_inner.shape, dtype=np.uint8)
+        cv2.circle(core_mask, (cx - x1, cy - y1), core_r, 255, -1)
+        total_core = max(1, int(np.sum(core_mask > 0)))
 
-        # 3. Ink pixel thresholding
-        ink_thresh = 0.15 if self.sensitivity == "HIGH" else 0.18 if self.sensitivity == "NORMAL" else 0.22
-        rel_diff = np.maximum(0.0, (bg_intensity - roi_inner.astype(np.float32)) / bg_intensity)
-        ink_mask = np.zeros_like(roi_inner, dtype=np.uint8)
-        ink_mask[(mask > 0) & (rel_diff >= ink_thresh)] = 255
+        # 3. Normalized contrast relative to local paper background
+        contrast_map = np.maximum(0.0, (bg_intensity - roi_inner.astype(np.float32)) / bg_intensity)
+        mean_contrast = float(np.mean(contrast_map[mask > 0]))
+        core_contrast = float(np.mean(contrast_map[core_mask > 0]))
 
-        total_ink_px = int(np.sum(ink_mask > 0))
-        dark_pixel_ratio = float(total_ink_px / float(total_inner))
+        # Ink thresholding (calibrated for pen/pencil vs paper)
+        dark_thresh = 0.18 if self.sensitivity == "HIGH" else 0.22 if self.sensitivity == "NORMAL" else 0.26
+        dark_mask = (mask > 0) & (contrast_map >= dark_thresh)
+        dark_pixel_ratio = float(np.sum(dark_mask) / float(total_inner))
+
+        very_dark_mask = (mask > 0) & (contrast_map >= 0.40)
+        very_dark_ratio = float(np.sum(very_dark_mask) / float(total_inner))
+
+        core_dark_ratio = float(np.sum((core_mask > 0) & (contrast_map >= dark_thresh)) / float(total_core))
+        white_pixel_ratio = float(np.sum((mask > 0) & (contrast_map < 0.12)) / float(total_inner))
 
         # 4. Connected Component Analysis for small dots / strokes
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(ink_mask, connectivity=8)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(dark_mask.astype(np.uint8), connectivity=8)
         max_cc_area = 0
         mark_centroid = None
         if num_labels > 1:
@@ -690,11 +724,35 @@ class OMRDetector:
             max_cc_area = int(stats[max_idx, cv2.CC_STAT_AREA])
             mark_centroid = (float(centroids[max_idx][0] + x1), float(centroids[max_idx][1] + y1))
 
+        # 5. Tri-state classification of individual bubble: FILLED, EMPTY, UNCERTAIN
+        # Outline immunity: if dark pixels only touch perimeter while core is empty and white ratio is high
+        is_edge_artifact = bool(core_dark_ratio < 0.08 and white_pixel_ratio >= 0.65)
+        is_empty_clean = bool(dark_pixel_ratio < 0.16 and core_dark_ratio < 0.16 and mean_contrast < 0.16)
+        is_empty_letter = bool(white_pixel_ratio >= 0.30 and mean_contrast < 0.46 and very_dark_ratio < 0.55)
+
+        is_filled_solid = bool(dark_pixel_ratio >= 0.55 and core_dark_ratio >= 0.48 and mean_contrast >= 0.32 and white_pixel_ratio <= 0.25)
+        is_filled_letter = bool(dark_pixel_ratio >= 0.72 and core_dark_ratio >= 0.65 and mean_contrast >= 0.48 and white_pixel_ratio <= 0.18)
+        is_filled_partial = bool(core_dark_ratio >= 0.35 and max_cc_area >= 18 and core_contrast >= 0.30 and mean_contrast >= 0.20)
+
+        if is_filled_solid or is_filled_letter or is_filled_partial:
+            bubble_status = "FILLED"
+        elif is_edge_artifact or is_empty_clean or is_empty_letter:
+            bubble_status = "EMPTY"
+        elif mean_contrast >= 0.18:
+            bubble_status = "UNCERTAIN"
+        else:
+            bubble_status = "EMPTY"
+
         return {
+            "status": bubble_status,
             "mean_contrast": round(float(np.clip(mean_contrast, 0.0, 1.0)), 4),
+            "core_contrast": round(float(np.clip(core_contrast, 0.0, 1.0)), 4),
             "dark_pixel_ratio": round(float(dark_pixel_ratio), 4),
+            "very_dark_ratio": round(float(very_dark_ratio), 4),
+            "core_dark_ratio": round(float(core_dark_ratio), 4),
+            "white_pixel_ratio": round(float(white_pixel_ratio), 4),
             "max_cc_area": max_cc_area,
-            "total_ink_px": total_ink_px,
+            "total_ink_px": int(np.sum(dark_mask)),
             "centroid": mark_centroid,
             "inner_radius": inner_r,
             "total_inner_pixels": total_inner,
@@ -786,90 +844,90 @@ class OMRDetector:
         - Exactly one bubble containing a detectable mark: classify that option as selected answer.
         - No detectable marks in any bubble: classify as BLANK.
         - Detectable marks in two or more bubbles: classify as MULTIPLE.
-        - Image quality or alignment makes result unreliable: classify as REVIEW.
+        - Image quality or ambiguous darkness: classify as REVIEW.
         Returns: (classification, confidence, mark_flags)
         """
         if not image_aligned or is_blurred:
             mark_flags = {opt: False for opt in options_data}
             return "REVIEW", 0.35, mark_flags
 
-        # Thresholds based on sensitivity profile (scaled to bubble area)
-        base_cc_thresh = 6 if self.sensitivity == "HIGH" else 8 if self.sensitivity == "NORMAL" else 18
-        sample_total_px = max((d.get("total_inner_pixels", 700) for d in options_data.values()), default=700)
-        area_scale = min(1.0, max(0.5, float(sample_total_px) / 700.0))
-        min_cc_thresh = max(4, int(round(base_cc_thresh * area_scale)))
-        min_dark_ratio = 0.010 if self.sensitivity == "HIGH" else 0.012 if self.sensitivity == "NORMAL" else 0.035
-
         all_contrasts = [d["mean_contrast"] for d in options_data.values()]
         all_dark_ratios = [d["dark_pixel_ratio"] for d in options_data.values()]
         min_contrast = min(all_contrasts)
-        min_dark_ratio_q = min(all_dark_ratios)
         max_contrast = max(all_contrasts)
+        min_dark_ratio = min(all_dark_ratios)
 
-        has_dominant_fill = max_contrast >= 0.35 or max(all_dark_ratios) >= 0.30
+        # Detect if this template question has printed letters inside the bubbles
+        # When printed letters are present, even empty bubbles have min_contrast >= 0.05 or min_dark_ratio >= 0.08
+        has_letter_baseline = bool(min_contrast >= 0.05 or min_dark_ratio >= 0.08)
 
         mark_flags: Dict[str, bool] = {}
 
         for opt, data in options_data.items():
+            status = data.get("status", "EMPTY")
             c = data["mean_contrast"]
             dr = data["dark_pixel_ratio"]
-            cc = data["max_cc_area"]
+            wr = data.get("white_pixel_ratio", 1.0)
+            cc = data.get("max_cc_area", 0)
 
             is_mark = False
-
-            if c >= 0.35 or dr >= 0.30:
-                is_mark = True
-            elif cc < min_cc_thresh and c < 0.08 and dr < min_dark_ratio:
-                # Blank bubble or isolated dust speckle
-                is_mark = False
-            elif has_dominant_fill:
-                # With a dominant solid fill, unshaded letters/noise with contrast < 0.18 are not marked
-                if c >= 0.28 or (c - min_contrast) >= 0.20:
+            if has_letter_baseline:
+                # To be marked over a printed letter baseline, must have substantial dark ink or stand out
+                if (c - min_contrast >= 0.13 and dr >= 0.30) or (c - min_contrast >= 0.16 and (dr - min_dark_ratio >= 0.15)):
+                    is_mark = True
+                elif (c - min_contrast >= 0.16 or wr <= 0.20) and dr >= 0.50:
+                    is_mark = True
+                elif status == "FILLED" and wr <= 0.25 and (c - min_contrast >= 0.10):
+                    is_mark = True
+            else:
+                # Clean circular bubbles (no printed letters inside)
+                if status == "FILLED":
+                    is_mark = True
+                elif (c - min_contrast >= 0.14) and (dr - min_dark_ratio >= 0.14):
+                    is_mark = True
+                elif cc >= 8 and (dr - min_dark_ratio >= 0.02) and data.get("core_dark_ratio", 0.0) >= 0.04 and (c - min_contrast >= 0.02):
+                    is_mark = True
+                elif status == "UNCERTAIN" and (c - min_contrast >= 0.15):
                     is_mark = True
                 else:
                     is_mark = False
-            else:
-                # No bubble is dominantly filled (evaluating dots, strokes, faint marks)
-                if min_contrast < 0.04 and min_dark_ratio_q < 0.02:
-                    # Clean empty bubbles
-                    if cc >= min_cc_thresh and dr >= min_dark_ratio:
-                        is_mark = True
-                    elif c >= 0.12 or dr >= 0.04:
-                        is_mark = True
-                else:
-                    # Bubbles with printed letters inside
-                    if (c - min_contrast) >= 0.14 or (dr - min_dark_ratio_q) >= 0.12:
-                        is_mark = True
-                    elif c >= 0.25:
-                        is_mark = True
 
             mark_flags[opt] = is_mark
 
         marked_opts = [opt for opt, flag in mark_flags.items() if flag]
+        uncertain_opts = [opt for opt, d in options_data.items() if d.get("status") == "UNCERTAIN"]
 
         if len(marked_opts) == 0:
-            if max_contrast >= 0.18:
-                return "REVIEW", 0.45, mark_flags
-            return "BLANK", 0.98, mark_flags
+            if len(uncertain_opts) == 0:
+                return "BLANK", 0.99, mark_flags
+            # Uniform baseline check (e.g. all options have printed letters with similar contrast)
+            if (max_contrast - min_contrast) < 0.14:
+                return "BLANK", 0.98, mark_flags
+            # Real ambiguous / faint mark: flag for teacher review
+            return "REVIEW", 0.50, mark_flags
 
         elif len(marked_opts) == 1:
             selected = marked_opts[0]
             sel_c = options_data[selected]["mean_contrast"]
             other_c = [d["mean_contrast"] for o, d in options_data.items() if o != selected]
             runner_up = max(other_c) if other_c else 0.0
-            confidence = round(min(1.0, max(0.70, 0.70 + (sel_c - runner_up))), 2)
-            return selected, confidence, mark_flags
+
+            # Verify contrast margin against runner-up
+            if (sel_c - runner_up) >= 0.08 or options_data[selected]["dark_pixel_ratio"] >= 0.40 or options_data[selected].get("max_cc_area", 0) >= 8:
+                confidence = round(min(1.0, max(0.75, 0.75 + (sel_c - runner_up))), 2)
+                return selected, confidence, mark_flags
+            return "REVIEW", 0.55, mark_flags
 
         else:
             sorted_marked = sorted(marked_opts, key=lambda o: options_data[o]["mean_contrast"], reverse=True)
             top_c = options_data[sorted_marked[0]]["mean_contrast"]
             sec_c = options_data[sorted_marked[1]]["mean_contrast"]
 
-            # If one is heavily filled and second is an erasure (< 0.22) with large gap, flag REVIEW
-            if top_c >= 0.65 and sec_c < 0.22 and (top_c - sec_c) >= 0.45:
+            # If one is heavily filled and second is an erasure (< 0.35) with large gap, flag REVIEW
+            if top_c >= 0.65 and 0.18 <= sec_c < 0.35 and (top_c - sec_c) >= 0.35:
                 return "REVIEW", 0.50, mark_flags
 
-            return "MULTIPLE", 0.92, mark_flags
+            return "MULTIPLE", 0.95, mark_flags
 
     def generate_visual_diagnostic(
         self,
