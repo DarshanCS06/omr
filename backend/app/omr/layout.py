@@ -52,9 +52,9 @@ class OMRLayoutConfig:
 
     def __init__(
         self,
-        question_count: int = 100,
+        question_count: int = 80,
         options_per_question: int = 4,
-        template_type: str = "standard",
+        template_type: str = "navodaya_80",
     ):
         self.width = CANONICAL_WIDTH
         self.height = CANONICAL_HEIGHT
@@ -72,22 +72,211 @@ class OMRLayoutConfig:
         self.qr_box: Dict[str, int] = {}
         self.qr_box_pt: Dict[str, float] = {}
 
-        # Roll Number Bubbles (empty for sheets with handwritten roll boxes)
+        # Roll Number Bubbles and handwritten digit boxes
         self.roll_digit_count = 0
         self.roll_bubbles: List[RollDigitBubble] = []
+        self.roll_boxes: List[Tuple[int, int, int, int]] = []
+
+        # Main Test Booklet Number Bubbles and handwritten digit boxes
+        self.booklet_digit_count = 0
+        self.booklet_bubbles: List[RollDigitBubble] = []
+        self.booklet_boxes: List[Tuple[int, int, int, int]] = []
+
+        # Invigilator section bubbles: State (2), Taluk (2), Centre (2)
+        self.state_bubbles: List[RollDigitBubble] = []
+        self.taluk_bubbles: List[RollDigitBubble] = []
+        self.centre_bubbles: List[RollDigitBubble] = []
+
+        # Main Booklet Code (A, B, C, D) and Medium (English, Kannada)
+        self.booklet_code_bubbles: Dict[str, Tuple[int, int]] = {}
+        self.medium_bubbles: Dict[str, Tuple[int, int]] = {}
+
+        # Candidate Name & Father Name boxes
+        self.candidate_name_box: Dict[str, int] = {}
+        self.father_name_box: Dict[str, int] = {}
 
         # Question Bubbles: {question_num: {option: BubbleLocation}}
-        self.bubble_radius = 24  # canonical pixels
-        self.bubble_radius_pt = 8.5
+        self.bubble_radius = 15  # canonical pixels
+        self.bubble_radius_pt = 15.0 / SCALE_X
         self.bubbles: Dict[int, Dict[str, BubbleLocation]] = {}
 
         # Build layout geometry based on template type
-        if self.template_type in ("vidyakashi_official", "vidyakashi_100"):
+        if self.template_type in ("navodaya_80", "navodaya") or self.question_count == 80:
+            self.template_type = "navodaya_80"
+            self._build_navodaya_80_layout()
+        elif self.template_type in ("vidyakashi_official", "vidyakashi_100"):
             self._build_vidyakashi_official_layout()
         elif self.template_type in ("vidyakashi_25", "vidyakashi_50"):
             self._build_vidyakashi_layout()
         else:
             self._build_standard_layout()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Official Navodaya 4-Column 80Q OMR Sheet Layout (Exact Calibrated Grid)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_navodaya_80_layout(self):
+        """
+        Constructs the authoritative calibrated geometry for the official 80-question
+        Navodaya OMR Answer Sheet in canonical 1654 x 2338 space.
+        Includes:
+        - 4 Corner registration markers
+        - 80 Questions in 4 columns (1-20, 21-40, 41-60, 61-80) with options A, B, C, D
+        - 7-digit Roll Number bubbled matrix (0-9) + 7 handwritten digit boxes
+        - 7-digit Main Test Booklet Number bubbled matrix (0-9) + 7 handwritten digit boxes
+        - Candidate Name & Father Name boxes
+        - State (2 cols), Taluk (2 cols), Centre (2 cols) invigilator code grids
+        - Main Booklet Code (A, B, C, D) bubbles
+        - Medium (English, Kannada) bubbles
+        """
+        self.question_count = 80
+        self.options_per_question = 4
+        self.bubble_radius = 15
+        self.bubble_radius_pt = self.bubble_radius / SCALE_X
+        self.marker_size = 36
+        self.marker_size_pt = self.marker_size / SCALE_X
+
+        # 1. Four corner black square registration markers (centers in canonical space)
+        self.markers = {
+            "top_left": (57, 57),
+            "top_right": (1597, 57),
+            "bottom_left": (57, 2281),
+            "bottom_right": (1597, 2281),
+        }
+        for name, (cx, cy) in self.markers.items():
+            w_pt = self.marker_size_pt
+            h_pt = self.marker_size_pt
+            self.markers_pt[name] = (
+                (cx / SCALE_X) - (w_pt / 2.0),
+                (cy / SCALE_Y) - (h_pt / 2.0),
+                w_pt,
+                h_pt,
+            )
+
+        # 2. Roll Number: 7 columns of bubbled digits (0 to 9) and 7 handwritten digit boxes
+        self.roll_digit_count = 7
+        self.roll_bubbles = []
+        self.roll_boxes = []
+        roll_col_xs = [138, 179, 219, 260, 301, 342, 383]
+        digit_row_ys = [438, 470, 502, 534, 566, 598, 630, 662, 694, 726]
+
+        for c_idx, cx in enumerate(roll_col_xs):
+            bx1 = int(round(116 + c_idx * 41.7))
+            bx2 = int(round(116 + (c_idx + 1) * 41.7))
+            self.roll_boxes.append((bx1, 340, bx2, 405))
+            for digit, cy in enumerate(digit_row_ys):
+                self.roll_bubbles.append(
+                    RollDigitBubble(
+                        column_index=c_idx,
+                        digit=digit,
+                        cx=cx,
+                        cy=cy,
+                        radius=14,
+                        cx_pt=cx / SCALE_X,
+                        cy_pt=cy / SCALE_Y,
+                        radius_pt=14.0 / SCALE_X,
+                    )
+                )
+
+        # 3. Main Test Booklet No: 7 columns of bubbled digits (0 to 9) and 7 handwritten digit boxes
+        self.booklet_digit_count = 7
+        self.booklet_bubbles = []
+        self.booklet_boxes = []
+        booklet_col_xs = [450, 491, 532, 573, 614, 655, 696]
+
+        for c_idx, cx in enumerate(booklet_col_xs):
+            bx1 = int(round(428 + c_idx * 41.7))
+            bx2 = int(round(428 + (c_idx + 1) * 41.7))
+            self.booklet_boxes.append((bx1, 340, bx2, 405))
+            for digit, cy in enumerate(digit_row_ys):
+                self.booklet_bubbles.append(
+                    RollDigitBubble(
+                        column_index=c_idx,
+                        digit=digit,
+                        cx=cx,
+                        cy=cy,
+                        radius=14,
+                        cx_pt=cx / SCALE_X,
+                        cy_pt=cy / SCALE_Y,
+                        radius_pt=14.0 / SCALE_X,
+                    )
+                )
+
+        # 4. Candidate Name & Father's Name boxes
+        self.candidate_name_box = {"x1": 775, "y1": 315, "x2": 1130, "y2": 515}
+        self.father_name_box = {"x1": 775, "y1": 575, "x2": 1130, "y2": 778}
+
+        # 5. Invigilator Section: State (2 cols), Taluk (2 cols), Centre (2 cols)
+        self.state_bubbles = []
+        for c_idx, cx in enumerate([1218, 1259]):
+            for digit, cy in enumerate(digit_row_ys):
+                self.state_bubbles.append(
+                    RollDigitBubble(column_index=c_idx, digit=digit, cx=cx, cy=cy, radius=14)
+                )
+
+        self.taluk_bubbles = []
+        for c_idx, cx in enumerate([1340, 1381]):
+            for digit, cy in enumerate(digit_row_ys):
+                self.taluk_bubbles.append(
+                    RollDigitBubble(column_index=c_idx, digit=digit, cx=cx, cy=cy, radius=14)
+                )
+
+        self.centre_bubbles = []
+        for c_idx, cx in enumerate([1466, 1507]):
+            for digit, cy in enumerate(digit_row_ys):
+                self.centre_bubbles.append(
+                    RollDigitBubble(column_index=c_idx, digit=digit, cx=cx, cy=cy, radius=14)
+                )
+
+        # 6. Main Booklet Code (A, B, C, D)
+        self.booklet_code_bubbles = {
+            "A": (282, 1472),
+            "B": (282, 1526),
+            "C": (282, 1578),
+            "D": (282, 1632),
+        }
+
+        # 7. Medium (English, Kannada)
+        self.medium_bubbles = {
+            "English": (304, 1788),
+            "Kannada": (304, 1834),
+        }
+
+        # 8. All 80 Questions in 4 columns:
+        # Col 0: Q1..20
+        # Col 1: Q21..40
+        # Col 2: Q41..60
+        # Col 3: Q61..80
+        block_start_xs = [533.5, 820.0, 1106.5, 1393.0]
+        opt_step = 40.0
+        row_ys = [
+            952.5, 997.5, 1043.5, 1088.5, 1133.5, 1181.5, 1227.5, 1272.5, 1318.5, 1363.5,
+            1410.5, 1455.5, 1501.0, 1546.5, 1591.5, 1637.0, 1682.5, 1728.0, 1773.5, 1818.5,
+        ]
+        options = ["A", "B", "C", "D"]
+
+        self.bubbles = {}
+        for b_idx in range(4):
+            for r_idx in range(20):
+                q_num = b_idx * 20 + r_idx + 1
+                cy_px = int(round(row_ys[r_idx]))
+                cy_pt = cy_px / SCALE_Y
+
+                self.bubbles[q_num] = {}
+                for opt_idx, opt in enumerate(options):
+                    cx_px = int(round(block_start_xs[b_idx] + opt_idx * opt_step))
+                    cx_pt = cx_px / SCALE_X
+
+                    self.bubbles[q_num][opt] = BubbleLocation(
+                        question=q_num,
+                        option=opt,
+                        cx=cx_px,
+                        cy=cy_px,
+                        radius=self.bubble_radius,
+                        cx_pt=cx_pt,
+                        cy_pt=cy_pt,
+                        radius_pt=self.bubble_radius_pt,
+                    )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Official Vidyakashi 4-Column 100Q OMR Sheet Layout (Exact Calibrated Grid)
@@ -393,4 +582,18 @@ class OMRLayoutConfig:
                 }
                 for r in self.roll_bubbles
             ],
+            "booklet_bubbles": [
+                {
+                    "col": r.column_index,
+                    "digit": r.digit,
+                    "cx": r.cx,
+                    "cy": r.cy,
+                    "radius": r.radius,
+                }
+                for r in self.booklet_bubbles
+            ],
+            "booklet_code_bubbles": self.booklet_code_bubbles,
+            "medium_bubbles": self.medium_bubbles,
+            "candidate_name_box": self.candidate_name_box,
+            "father_name_box": self.father_name_box,
         }

@@ -9,14 +9,14 @@ class ExaminationBase(BaseModel):
     subject: str = Field(..., max_length=100)
     class_grade: str = Field(..., max_length=50)
     exam_date: str = Field(..., max_length=20)  # YYYY-MM-DD
-    question_count: int = Field(default=100, ge=1, le=200)
+    question_count: int = Field(default=80, ge=1, le=200)
     options_per_question: int = Field(default=4, ge=2, le=5)
     
-    # Marking scheme
+    # Marking scheme (Default Navodaya: 1 mark per correct, 0 for wrong/blank/multiple)
     positive_marks: float = Field(default=1.0, ge=0.0)
-    negative_marks: float = Field(default=0.25, ge=0.0)
+    negative_marks: float = Field(default=0.0, ge=0.0)
     blank_marks: float = Field(default=0.0)
-    multiple_penalty: float = Field(default=0.25, ge=0.0)
+    multiple_penalty: float = Field(default=0.0, ge=0.0)
     allow_teacher_override: bool = True
     is_published: bool = False
 

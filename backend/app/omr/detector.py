@@ -36,7 +36,7 @@ class OMRDetector:
         layout: Optional[OMRLayoutConfig] = None,
         sensitivity: Optional[str] = None,
     ):
-        self.layout = layout or OMRLayoutConfig(question_count=100)
+        self.layout = layout or OMRLayoutConfig(question_count=80, template_type="navodaya_80")
         self.expected_question_count = self.layout.question_count
         self._last_alignment_info: Dict[str, Any] = {}
         self._last_oriented_img: Optional[np.ndarray] = None
@@ -768,39 +768,150 @@ class OMRDetector:
         feats = self.evaluate_bubble_features(gray_img, cx, cy, radius)
         return feats["mean_contrast"]
 
-    def detect_roll_number(self, gray_img: np.ndarray) -> Tuple[Optional[str], float]:
-        """Detects roll number if the template includes roll bubbles; otherwise returns None."""
-        if not self.layout.roll_bubbles:
-            return None, 0.0
+    def decode_digit_grid(
+        self,
+        gray_img: np.ndarray,
+        bubbles_list: List[Any],
+        digit_count: int,
+    ) -> Tuple[Optional[str], float, List[Dict[str, Any]]]:
+        """
+        Decodes a multi-column digit bubble grid (e.g. 7-digit Roll No., 7-digit Booklet No., 2-digit State).
+        Accurately identifies:
+        - Fully darkened bubbles in each column
+        - Preserves leading zeros (e.g. '0123456')
+        - Detects multiple darkened bubbles in the same column (marked as '*')
+        - Detects missing/empty columns (marked as '?')
+        - Detects faint/partial marks (marked as '?')
+        Returns (digit_string, confidence_0_to_1, column_details).
+        """
+        if not bubbles_list or digit_count <= 0:
+            return None, 0.0, []
 
         by_col: Dict[int, List[Any]] = {}
-        for rb in self.layout.roll_bubbles:
+        for rb in bubbles_list:
             by_col.setdefault(rb.column_index, []).append(rb)
 
         col_digits = []
         confidences = []
+        col_details = []
 
-        for col_idx in range(self.layout.roll_digit_count):
+        for col_idx in range(digit_count):
             bubbles = by_col.get(col_idx, [])
-            densities = [
-                (b.digit, self.measure_bubble_ink_density(gray_img, b.cx, b.cy, b.radius))
-                for b in bubbles
-            ]
-            densities.sort(key=lambda x: x[1], reverse=True)
-
-            top_digit, top_density = densities[0]
-            runner_up_digit, runner_up_density = densities[1] if len(densities) > 1 else (None, 0.0)
-
-            if top_density >= self.fill_threshold and (top_density - runner_up_density) >= self.contrast_margin:
-                col_digits.append(str(top_digit))
-                confidences.append(min(1.0, (top_density - runner_up_density) / 0.3))
-            else:
+            if not bubbles:
                 col_digits.append("?")
-                confidences.append(0.3)
+                confidences.append(0.0)
+                col_details.append({"status": "MISSING", "digit": "?", "conf": 0.0})
+                continue
 
-        detected_roll = "".join(col_digits)
+            evaluated = []
+            for b in bubbles:
+                feats = self.evaluate_bubble_features(gray_img, b.cx, b.cy, b.radius)
+                evaluated.append((b.digit, feats))
+
+            # Sort by mean_contrast descending
+            evaluated.sort(key=lambda x: x[1]["mean_contrast"], reverse=True)
+
+            # Check which bubbles in this column qualify as marked
+            marked_candidates = []
+            for d, feats in evaluated:
+                status = feats.get("status", "EMPTY")
+                mc = feats.get("mean_contrast", 0.0)
+                dpr = feats.get("dark_pixel_ratio", 0.0)
+                cdr = feats.get("core_dark_ratio", 0.0)
+                if status == "FILLED" or (dpr >= 0.38 and mc >= 0.25) or (cdr >= 0.35 and mc >= 0.20):
+                    marked_candidates.append((d, feats))
+
+            if len(marked_candidates) == 0:
+                # No bubble is filled
+                col_digits.append("?")
+                confidences.append(0.0)
+                col_details.append({"status": "EMPTY", "digit": "?", "conf": 0.0})
+            elif len(marked_candidates) == 1:
+                # Exactly one bubble is filled
+                lead_d, lead_f = marked_candidates[0]
+                # Margin against second highest contrast bubble
+                other_mc = [f["mean_contrast"] for d, f in evaluated if d != lead_d]
+                runner_up_mc = max(other_mc) if other_mc else 0.0
+                margin = lead_f["mean_contrast"] - runner_up_mc
+
+                if margin >= 0.10 or lead_f["dark_pixel_ratio"] >= 0.48:
+                    conf = min(1.0, max(0.85, 0.85 + margin))
+                    col_digits.append(str(lead_d))
+                    confidences.append(conf)
+                    col_details.append({"status": "VALID", "digit": str(lead_d), "conf": round(conf, 2)})
+                else:
+                    col_digits.append("?")
+                    confidences.append(0.40)
+                    col_details.append({"status": "UNCERTAIN", "digit": "?", "conf": 0.40})
+            else:
+                # Multiple filled bubbles in the same column
+                col_digits.append("*")
+                confidences.append(0.20)
+                col_details.append({"status": "MULTIPLE", "digit": "*", "conf": 0.20})
+
+        result_str = "".join(col_digits)
         avg_conf = float(np.mean(confidences)) if confidences else 0.0
-        return detected_roll, round(avg_conf, 2)
+        return result_str, round(avg_conf, 2), col_details
+
+    def detect_roll_number(self, gray_img: np.ndarray) -> Tuple[Optional[str], float]:
+        """Detects roll number with leading zero preservation and strict validation."""
+        if not self.layout.roll_bubbles:
+            return None, 0.0
+        roll_str, conf, _ = self.decode_digit_grid(
+            gray_img, self.layout.roll_bubbles, self.layout.roll_digit_count
+        )
+        return roll_str, conf
+
+    def detect_booklet_number(self, gray_img: np.ndarray) -> Tuple[Optional[str], float]:
+        """Detects 7-digit Main Test Booklet Number from bubbled matrix."""
+        if not getattr(self.layout, "booklet_bubbles", None):
+            return None, 0.0
+        booklet_str, conf, _ = self.decode_digit_grid(
+            gray_img, self.layout.booklet_bubbles, self.layout.booklet_digit_count
+        )
+        return booklet_str, conf
+
+    def detect_invigilator_codes(self, gray_img: np.ndarray) -> Dict[str, Optional[str]]:
+        """Detects State (2 cols), Taluk (2 cols), and Centre (2 cols) code grids."""
+        codes = {"state": None, "taluk": None, "centre": None}
+        if getattr(self.layout, "state_bubbles", None):
+            s_str, _, _ = self.decode_digit_grid(gray_img, self.layout.state_bubbles, 2)
+            codes["state"] = s_str
+        if getattr(self.layout, "taluk_bubbles", None):
+            t_str, _, _ = self.decode_digit_grid(gray_img, self.layout.taluk_bubbles, 2)
+            codes["taluk"] = t_str
+        if getattr(self.layout, "centre_bubbles", None):
+            c_str, _, _ = self.decode_digit_grid(gray_img, self.layout.centre_bubbles, 2)
+            codes["centre"] = c_str
+        return codes
+
+    def detect_booklet_code(self, gray_img: np.ndarray) -> Optional[str]:
+        """Detects Main Booklet Code (A, B, C, D)."""
+        bubbles = getattr(self.layout, "booklet_code_bubbles", {})
+        if not bubbles:
+            return None
+        marked = []
+        for code, (cx, cy) in bubbles.items():
+            feats = self.evaluate_bubble_features(gray_img, cx, cy, self.layout.bubble_radius)
+            if feats["status"] == "FILLED" or (feats["dark_pixel_ratio"] >= 0.38 and feats["mean_contrast"] >= 0.25):
+                marked.append((code, feats["mean_contrast"]))
+        if len(marked) == 1:
+            return marked[0][0]
+        return None
+
+    def detect_medium(self, gray_img: np.ndarray) -> Optional[str]:
+        """Detects Examination Medium (English, Kannada)."""
+        bubbles = getattr(self.layout, "medium_bubbles", {})
+        if not bubbles:
+            return None
+        marked = []
+        for med, (cx, cy) in bubbles.items():
+            feats = self.evaluate_bubble_features(gray_img, cx, cy, self.layout.bubble_radius)
+            if feats["status"] == "FILLED" or (feats["dark_pixel_ratio"] >= 0.38 and feats["mean_contrast"] >= 0.25):
+                marked.append((med, feats["mean_contrast"]))
+        if len(marked) == 1:
+            return marked[0][0]
+        return None
 
     def detect_vidyakashi_candidate_info(
         self, raw_or_rectified_img: np.ndarray
@@ -1112,20 +1223,37 @@ class OMRDetector:
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         is_blurred = lap_var < 35.0
 
-        # 1. Student Identification (Roll No. & Student Name via HTREngine)
+        # 1. Student & Booklet Identification
         bubble_roll, bubble_conf = self.detect_roll_number(gray)
-        tmpl_type = getattr(self.layout, "template_type", "vidyakashi_official")
+        booklet_number, booklet_conf = self.detect_booklet_number(gray)
+        invig_codes = self.detect_invigilator_codes(gray)
+        booklet_code = self.detect_booklet_code(gray)
+        medium = self.detect_medium(gray)
+
+        tmpl_type = getattr(self.layout, "template_type", "navodaya_80")
         htr_details = HTREngine.extract_candidate_details(
             canonical_img=rectified,
             template_type=tmpl_type,
             bubble_roll=bubble_roll,
         )
-        detected_roll = htr_details.get("student_roll") or bubble_roll
+        detected_roll = bubble_roll if bubble_roll and "?" not in bubble_roll and "*" not in bubble_roll else (htr_details.get("student_roll") or bubble_roll)
         roll_conf = htr_details.get("roll_confidence", bubble_conf)
         detected_name = htr_details.get("student_name")
         name_conf = htr_details.get("name_confidence", 0.0)
         name_crop_url = htr_details.get("name_crop_url")
-        details_need_review = htr_details.get("needs_review", False)
+        father_name = htr_details.get("father_name")
+        father_conf = htr_details.get("father_confidence", 0.0)
+        father_crop_url = htr_details.get("father_crop_url")
+        handwritten_roll = htr_details.get("handwritten_roll")
+        handwritten_booklet = htr_details.get("handwritten_booklet")
+        roll_match_status = htr_details.get("roll_match_status", "MATCH")
+        details_need_review = (
+            bool(htr_details.get("needs_review", False))
+            or (not detected_roll)
+            or ("?" in (detected_roll or ""))
+            or ("*" in (detected_roll or ""))
+            or (roll_match_status in ("MISMATCH", "VERIFICATION_REQUIRED"))
+        )
         qr_identifier = self.detect_qr_code(rectified)
 
         # 2. Evaluate Question Bubbles
@@ -1173,6 +1301,18 @@ class OMRDetector:
             "alignment_info": alignment_info,
             "detected_roll_number": detected_roll,
             "detected_student_name": detected_name,
+            "father_name": father_name,
+            "father_confidence": father_conf,
+            "father_crop_url": father_crop_url,
+            "handwritten_roll": handwritten_roll,
+            "handwritten_booklet": handwritten_booklet,
+            "roll_match_status": roll_match_status,
+            "booklet_number": booklet_number,
+            "booklet_code": booklet_code,
+            "medium": medium,
+            "state_code": invig_codes.get("state"),
+            "taluk_code": invig_codes.get("taluk"),
+            "centre_code": invig_codes.get("centre"),
             "roll_confidence": roll_conf,
             "name_confidence": name_conf,
             "name_crop_url": name_crop_url,

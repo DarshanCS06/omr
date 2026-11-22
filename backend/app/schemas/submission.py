@@ -37,6 +37,8 @@ class FinalizeSubmissionRequest(BaseModel):
 class UpdateStudentDetailsRequest(BaseModel):
     student_name: Optional[str] = None
     student_roll: Optional[str] = None
+    father_name: Optional[str] = None
+    booklet_number: Optional[str] = None
 
 
 class SubmissionResponse(BaseModel):
@@ -47,6 +49,18 @@ class SubmissionResponse(BaseModel):
     student_roll: Optional[str] = None
     detected_roll_number: Optional[str] = None
     detected_student_name: Optional[str] = None
+    father_name: Optional[str] = None
+    father_confidence: float = 0.0
+    father_crop_url: Optional[str] = None
+    handwritten_roll: Optional[str] = None
+    roll_match_status: Optional[str] = "MATCH"
+    booklet_number: Optional[str] = None
+    handwritten_booklet: Optional[str] = None
+    booklet_code: Optional[str] = None
+    medium: Optional[str] = None
+    state_code: Optional[str] = None
+    taluk_code: Optional[str] = None
+    centre_code: Optional[str] = None
     name_confidence: float = 0.0
     roll_confidence: float = 0.0
     name_crop_url: Optional[str] = None

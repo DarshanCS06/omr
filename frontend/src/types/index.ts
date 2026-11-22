@@ -103,6 +103,18 @@ export interface Submission {
   student_roll?: string;
   detected_roll_number?: string;
   detected_student_name?: string;
+  father_name?: string;
+  father_confidence?: number;
+  father_crop_url?: string;
+  handwritten_roll?: string;
+  roll_match_status?: string;
+  booklet_number?: string;
+  handwritten_booklet?: string;
+  booklet_code?: string;
+  medium?: string;
+  state_code?: string;
+  taluk_code?: string;
+  centre_code?: string;
   name_confidence?: number;
   roll_confidence?: number;
   name_crop_url?: string;

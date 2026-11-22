@@ -46,11 +46,11 @@ export const ExaminationsPage: React.FC<ExaminationsPageProps> = ({
   const [subject, setSubject] = useState('');
   const [classGrade, setClassGrade] = useState('');
   const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
-  const [questionCount, setQuestionCount] = useState<number>(100);
+  const [questionCount, setQuestionCount] = useState<number>(80);
   const [positiveMarks, setPositiveMarks] = useState<number>(1.0);
-  const [negativeMarks, setNegativeMarks] = useState<number>(0.25);
+  const [negativeMarks, setNegativeMarks] = useState<number>(0.0);
   const [blankMarks, setBlankMarks] = useState<number>(0.0);
-  const [multiplePenalty, setMultiplePenalty] = useState<number>(0.25);
+  const [multiplePenalty, setMultiplePenalty] = useState<number>(0.0);
   const [answerKeyInput, setAnswerKeyInput] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -114,9 +114,11 @@ export const ExaminationsPage: React.FC<ExaminationsPageProps> = ({
     setTitle('');
     setSubject('');
     setClassGrade('');
-    setQuestionCount(100);
+    setQuestionCount(80);
     setPositiveMarks(1.0);
-    setNegativeMarks(0.25);
+    setNegativeMarks(0.0);
+    setBlankMarks(0.0);
+    setMultiplePenalty(0.0);
     setAnswerKeyInput('');
     setFormError(null);
   };
@@ -388,10 +390,11 @@ export const ExaminationsPage: React.FC<ExaminationsPageProps> = ({
                   onChange={(e) => setQuestionCount(Number(e.target.value))}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-600 bg-white"
                 >
+                  <option value={80}>80 Questions (Official Navodaya 4-Column - Recommended)</option>
                   <option value={25}>25 Questions (Single column)</option>
                   <option value={40}>40 Questions (2 columns)</option>
                   <option value={50}>50 Questions (2 columns)</option>
-                  <option value={100}>100 Questions (Standard 4 columns - Recommended)</option>
+                  <option value={100}>100 Questions (Standard 4 columns)</option>
                   <option value={150}>150 Questions (5 columns)</option>
                   <option value={200}>200 Questions (5 columns)</option>
                 </select>

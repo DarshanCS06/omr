@@ -13,14 +13,14 @@ class Examination(Base):
     subject = Column(String(100), nullable=False)
     class_grade = Column(String(50), nullable=False)
     exam_date = Column(String(20), nullable=False)  # ISO string YYYY-MM-DD
-    question_count = Column(Integer, default=100, nullable=False)
+    question_count = Column(Integer, default=80, nullable=False)
     options_per_question = Column(Integer, default=4, nullable=False)
     
-    # Marking scheme
+    # Marking scheme (Default Navodaya: 1 mark per correct, 0 for wrong/blank/multiple)
     positive_marks = Column(Float, default=1.0, nullable=False)
-    negative_marks = Column(Float, default=0.25, nullable=False)
+    negative_marks = Column(Float, default=0.0, nullable=False)
     blank_marks = Column(Float, default=0.0, nullable=False)
-    multiple_penalty = Column(Float, default=0.25, nullable=False)
+    multiple_penalty = Column(Float, default=0.0, nullable=False)
     
     allow_teacher_override = Column(Boolean, default=True, nullable=False)
     is_published = Column(Boolean, default=False, nullable=False)

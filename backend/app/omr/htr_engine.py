@@ -39,6 +39,18 @@ VIDYAKASHI_ROLL_BOXES = [
     (1542, 577, 1597, 630),
 ]
 
+# Exact bounding coordinates for Navodaya OMR 7-digit Roll and Booklet boxes (Canonical 1654 x 2338)
+NAVODAYA_ROLL_BOXES = [
+    (int(round(116 + i * 41.7)), 340, int(round(116 + (i + 1) * 41.7)), 405)
+    for i in range(7)
+]
+NAVODAYA_BOOKLET_BOXES = [
+    (int(round(428 + i * 41.7)), 340, int(round(428 + (i + 1) * 41.7)), 405)
+    for i in range(7)
+]
+NAVODAYA_NAME_BOX = (775, 315, 1130, 515)
+NAVODAYA_FATHER_BOX = (775, 575, 1130, 778)
+
 
 class HTREngine:
     """
@@ -241,7 +253,9 @@ class HTREngine:
 
         gray = cv2.cvtColor(canonical_img, cv2.COLOR_BGR2GRAY) if len(canonical_img.shape) == 3 else canonical_img.copy()
 
-        if template_type in ("vidyakashi_official", "vidyakashi_100"):
+        if template_type in ("navodaya_80", "navodaya"):
+            boxes = NAVODAYA_ROLL_BOXES
+        elif template_type in ("vidyakashi_official", "vidyakashi_100"):
             boxes = VIDYAKASHI_ROLL_BOXES
         else:
             # Standard 9-digit roll box at y=145..175, x=760..1090
@@ -294,6 +308,54 @@ class HTREngine:
         roll_str = "".join(detected_digits)
         avg_conf = round(float(np.mean(confs)), 2) if confs else 0.70
         return roll_str, avg_conf
+
+    @staticmethod
+    def recognize_booklet_boxes(canonical_img: np.ndarray) -> Tuple[Optional[str], float]:
+        """Recognizes the 7 handwritten digit boxes for Main Test Booklet No."""
+        if canonical_img is None or canonical_img.size == 0:
+            return None, 0.0
+
+        h, w = canonical_img.shape[:2]
+        if w != 1654 or h != 2338:
+            canonical_img = cv2.resize(canonical_img, (1654, 2338))
+
+        gray = cv2.cvtColor(canonical_img, cv2.COLOR_BGR2GRAY) if len(canonical_img.shape) == 3 else canonical_img.copy()
+        detected_digits = []
+        confs = []
+
+        for x1, y1, x2, y2 in NAVODAYA_BOOKLET_BOXES:
+            inner = gray[y1 + 5 : y2 - 5, x1 + 5 : x2 - 5]
+            if inner.size == 0:
+                continue
+
+            inv = (inner < 185).astype(np.uint8) * 255
+            h_line = cv2.morphologyEx(inv, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (16, 1)))
+            v_line = cv2.morphologyEx(inv, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 16)))
+            lines = cv2.dilate(cv2.bitwise_or(h_line, v_line), np.ones((2, 2), np.uint8))
+            cleaned_bin = inv.copy()
+            cleaned_bin[lines > 0] = 0
+
+            num_labels, _, stats, _ = cv2.connectedComponentsWithStats(cleaned_bin)
+            digit_glyphs = [
+                stats[i]
+                for i in range(1, num_labels)
+                if 12 <= stats[i][3] <= 42 and 4 <= stats[i][2] <= 36 and stats[i][4] >= 25
+            ]
+
+            if not digit_glyphs:
+                continue
+
+            cleaned_inner = inner.copy()
+            cleaned_inner[lines > 0] = 255
+            digit, conf = HTREngine._recognize_single_digit(cleaned_inner)
+            if digit:
+                detected_digits.append(digit)
+                confs.append(conf)
+
+        if len(detected_digits) < 4:
+            return None, 0.0
+
+        return "".join(detected_digits), round(float(np.mean(confs)), 2) if confs else 0.70
 
     @staticmethod
     def _recognize_single_digit(inner_gray: np.ndarray) -> Tuple[Optional[str], float]:
@@ -364,7 +426,18 @@ class HTREngine:
             canonical_img = cv2.resize(canonical_img, (1654, 2338))
 
         # 1. Crop Student Name Region for thumbnail preview and HTR
-        if template_type in ("vidyakashi_official", "vidyakashi_100"):
+        father_crop = None
+        father_crop_b64 = None
+        rec_father = None
+        father_conf = 0.0
+
+        if template_type in ("navodaya_80", "navodaya"):
+            name_crop = canonical_img[315:515, 775:1130].copy()
+            father_crop = canonical_img[575:778, 775:1130].copy()
+            rec_father, father_conf = HTREngine.recognize_name(father_crop)
+            _, f_thumb = cv2.imencode(".jpg", father_crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            father_crop_b64 = f"data:image/jpeg;base64,{base64.b64encode(f_thumb.tobytes()).decode('ascii')}"
+        elif template_type in ("vidyakashi_official", "vidyakashi_100"):
             name_crop = canonical_img[430:495, 235:855].copy()
         else:
             name_crop = canonical_img[175:240, 200:880].copy()
@@ -373,9 +446,10 @@ class HTREngine:
         cand_roll = None
         cand_name = None
         cand_conf = 0.0
-        canvas = HTREngine.build_candidate_canvas(canonical_img)
-        if canvas is not None:
-            cand_roll, cand_name, cand_conf = HTREngine.recognize_canvas(canvas)
+        if template_type not in ("navodaya_80", "navodaya"):
+            canvas = HTREngine.build_candidate_canvas(canonical_img)
+            if canvas is not None:
+                cand_roll, cand_name, cand_conf = HTREngine.recognize_canvas(canvas)
 
         # 3. Dedicated name crop recognition fallback
         rec_name, rec_conf = HTREngine.recognize_name(name_crop)
@@ -394,31 +468,42 @@ class HTREngine:
             final_name = None
             name_conf = 0.0
 
-        # Roll priority: Bubble grid > Digital PDF text > Canvas roll OCR > Discrete box HTR
+        # Roll recognition: Bubble grid is primary; also OCR the handwritten digit boxes
         rec_roll_boxes, box_conf = HTREngine.recognize_roll_boxes(canonical_img, template_type)
+        rec_booklet_boxes = None
+        if template_type in ("navodaya_80", "navodaya"):
+            rec_booklet_boxes, _ = HTREngine.recognize_booklet_boxes(canonical_img)
 
-        if bubble_roll and "?" not in bubble_roll:
+        roll_match_status = "MATCH"
+        if bubble_roll and "?" not in bubble_roll and "*" not in bubble_roll:
             final_roll = bubble_roll
-            roll_conf = 0.98
+            roll_conf = 0.99
+            if rec_roll_boxes and len(rec_roll_boxes) >= 4:
+                # Compare bubble roll vs handwritten roll
+                if bubble_roll != rec_roll_boxes and not bubble_roll.endswith(rec_roll_boxes):
+                    roll_match_status = "MISMATCH"
         elif digital_roll:
             final_roll = digital_roll
             roll_conf = 1.0
-        elif cand_roll:
-            final_roll = cand_roll
-            roll_conf = cand_conf
         elif rec_roll_boxes and len(rec_roll_boxes) >= 4:
             final_roll = rec_roll_boxes
             roll_conf = box_conf
+            roll_match_status = "VERIFICATION_REQUIRED"
+        elif cand_roll:
+            final_roll = cand_roll
+            roll_conf = cand_conf
         else:
-            final_roll = None
+            final_roll = bubble_roll if bubble_roll else None
             roll_conf = 0.0
+            roll_match_status = "VERIFICATION_REQUIRED"
 
         # 4. Determine Review Flag
         needs_review = bool(
             (final_name and name_conf < 0.70)
             or (not final_roll)
             or (final_roll and roll_conf < 0.75)
-            or (final_roll and "?" in final_roll)
+            or (final_roll and ("?" in final_roll or "*" in final_roll))
+            or (roll_match_status in ("MISMATCH", "VERIFICATION_REQUIRED"))
         )
 
         # Generate base64 thumbnail of the cropped name field for visual inspection by teachers
@@ -428,6 +513,12 @@ class HTREngine:
         return {
             "student_name": final_name,
             "student_roll": final_roll,
+            "handwritten_roll": rec_roll_boxes,
+            "roll_match_status": roll_match_status,
+            "handwritten_booklet": rec_booklet_boxes,
+            "father_name": rec_father,
+            "father_confidence": round(father_conf, 2),
+            "father_crop_url": father_crop_b64,
             "name_confidence": round(name_conf, 2),
             "roll_confidence": round(roll_conf, 2),
             "needs_review": needs_review,

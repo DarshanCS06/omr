@@ -32,6 +32,18 @@ class Submission(Base):
     sheet_identifier = Column(String(100), index=True, nullable=True)  # Read from QR or barcode
     detected_roll_number = Column(String(50), index=True, nullable=True)  # Read from roll bubbles or HTR
     detected_student_name = Column(String(200), nullable=True)  # Read via HTR
+    father_name = Column(String(200), nullable=True)  # Read via HTR
+    father_confidence = Column(Float, default=0.0, nullable=False)
+    father_crop_url = Column(Text, nullable=True)
+    handwritten_roll = Column(String(50), nullable=True)
+    roll_match_status = Column(String(50), default="MATCH", nullable=True)
+    booklet_number = Column(String(50), nullable=True)
+    handwritten_booklet = Column(String(50), nullable=True)
+    booklet_code = Column(String(10), nullable=True)
+    medium = Column(String(50), nullable=True)
+    state_code = Column(String(10), nullable=True)
+    taluk_code = Column(String(10), nullable=True)
+    centre_code = Column(String(10), nullable=True)
     name_confidence = Column(Float, default=0.0, nullable=False)
     roll_confidence = Column(Float, default=0.0, nullable=False)
     name_crop_url = Column(Text, nullable=True)  # Base64 thumbnail of cropped name field

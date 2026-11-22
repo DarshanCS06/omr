@@ -48,7 +48,7 @@ def bootstrap_database():
     except Exception as e:
         logger.warning(f"Database table creation note: {e}")
 
-    # Lightweight schema migration for newly added HTR columns
+    # Lightweight schema migration for newly added HTR & Navodaya columns
     try:
         from sqlalchemy import inspect, text
         inspector = inspect(engine)
@@ -63,6 +63,30 @@ def bootstrap_database():
                     conn.execute(text("ALTER TABLE submissions ADD COLUMN roll_confidence FLOAT DEFAULT 0.0"))
                 if "name_crop_url" not in columns:
                     conn.execute(text("ALTER TABLE submissions ADD COLUMN name_crop_url TEXT"))
+                if "father_name" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN father_name VARCHAR(200)"))
+                if "father_confidence" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN father_confidence FLOAT DEFAULT 0.0"))
+                if "father_crop_url" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN father_crop_url TEXT"))
+                if "handwritten_roll" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN handwritten_roll VARCHAR(50)"))
+                if "roll_match_status" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN roll_match_status VARCHAR(50) DEFAULT 'MATCH'"))
+                if "booklet_number" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN booklet_number VARCHAR(50)"))
+                if "handwritten_booklet" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN handwritten_booklet VARCHAR(50)"))
+                if "booklet_code" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN booklet_code VARCHAR(10)"))
+                if "medium" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN medium VARCHAR(50)"))
+                if "state_code" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN state_code VARCHAR(10)"))
+                if "taluk_code" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN taluk_code VARCHAR(10)"))
+                if "centre_code" not in columns:
+                    conn.execute(text("ALTER TABLE submissions ADD COLUMN centre_code VARCHAR(10)"))
     except Exception as em:
         logger.warning(f"Schema migration note: {em}")
 
@@ -96,8 +120,22 @@ def bootstrap_database():
         elif demo_teacher.full_name != "Vidyakashi":
             demo_teacher.full_name = "Vidyakashi"
 
-        # 3. Seed Default Template Versions (25Q, 50Q, 100Q, 200Q)
-        for q_count in [25, 40, 50, 100, 150, 200]:
+        # 3. Seed Official Navodaya 80Q Template Version
+        nav_name = "Navodaya-80Q-V1"
+        nav_tmpl = db.query(TemplateVersion).filter(TemplateVersion.name == nav_name).first()
+        if not nav_tmpl:
+            nav_layout = OMRLayoutConfig(question_count=80, template_type="navodaya_80")
+            nav_tmpl = TemplateVersion(
+                name=nav_name,
+                question_count=80,
+                options_per_question=4,
+                layout_config=nav_layout.to_dict(),
+            )
+            db.add(nav_tmpl)
+            logger.info("Bootstrapped Navodaya 80Q Template: Navodaya-80Q-V1")
+
+        # 4. Seed Default Template Versions (25Q, 40Q, 50Q, 80Q, 100Q, 150Q, 200Q)
+        for q_count in [25, 40, 50, 80, 100, 150, 200]:
             name = f"OMR-A4-{q_count}Q-V1"
             tmpl = db.query(TemplateVersion).filter(TemplateVersion.name == name).first()
             if not tmpl:

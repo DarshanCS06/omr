@@ -48,9 +48,13 @@ class ReportExporter:
 
         # Table headers
         headers = [
+            "Rank",
             "Submission ID",
             "Roll Number",
             "Student Name",
+            "Father's Name",
+            "Booklet Number",
+            "Medium",
             "Total Score",
             "Max Score",
             "Percentage",
@@ -71,18 +75,29 @@ class ReportExporter:
         submissions = (
             db.query(Submission)
             .filter(Submission.examination_id == examination.id)
-            .order_by(Submission.id.asc())
+            .order_by(Submission.total_score.desc(), Submission.id.asc())
             .all()
         )
 
-        for sub in submissions:
+        current_rank = 1
+        for idx, sub in enumerate(submissions):
+            if idx > 0 and sub.total_score < submissions[idx - 1].total_score:
+                current_rank = idx + 1
+
             roll = sub.student.roll_number if sub.student else (sub.detected_roll_number or "UNKNOWN")
-            name = sub.student.name if sub.student else "Not Assigned"
+            name = sub.student.name if sub.student else (sub.detected_student_name or "Not Assigned")
+            father = sub.father_name or "-"
+            booklet = sub.booklet_number or "-"
+            medium = sub.medium or "-"
             
             row = [
+                current_rank,
                 sub.id,
                 sanitize_formula_injection(roll),
                 sanitize_formula_injection(name),
+                sanitize_formula_injection(father),
+                sanitize_formula_injection(booklet),
+                sanitize_formula_injection(medium),
                 sub.total_score,
                 sub.max_score,
                 f"{sub.percentage}%",
@@ -127,7 +142,8 @@ class ReportExporter:
 
         # Columns
         headers = [
-            "Submission ID", "Roll Number", "Student Name", "Total Score",
+            "Rank", "Submission ID", "Roll Number", "Student Name", "Father's Name",
+            "Booklet Number", "Medium", "Total Score",
             "Max Score", "Percentage", "Correct", "Incorrect", "Blank",
             "Multiple", "Needs Review", "Status"
         ]
@@ -144,19 +160,30 @@ class ReportExporter:
         submissions = (
             db.query(Submission)
             .filter(Submission.examination_id == examination.id)
-            .order_by(Submission.id.asc())
+            .order_by(Submission.total_score.desc(), Submission.id.asc())
             .all()
         )
 
         row_idx = 5
-        for sub in submissions:
+        current_rank = 1
+        for idx, sub in enumerate(submissions):
+            if idx > 0 and sub.total_score < submissions[idx - 1].total_score:
+                current_rank = idx + 1
+
             roll = sub.student.roll_number if sub.student else (sub.detected_roll_number or "UNKNOWN")
-            name = sub.student.name if sub.student else "Not Assigned"
+            name = sub.student.name if sub.student else (sub.detected_student_name or "Not Assigned")
+            father = sub.father_name or "-"
+            booklet = sub.booklet_number or "-"
+            medium = sub.medium or "-"
 
             row_data = [
+                current_rank,
                 sub.id,
                 sanitize_formula_injection(roll),
                 sanitize_formula_injection(name),
+                sanitize_formula_injection(father),
+                sanitize_formula_injection(booklet),
+                sanitize_formula_injection(medium),
                 sub.total_score,
                 sub.max_score,
                 f"{sub.percentage}%",
@@ -232,7 +259,7 @@ class ReportExporter:
             sub_q = sub_q.filter(Submission.uploaded_image_id.in_(img_ids))
             img_q = img_q.filter(UploadedImage.batch_id == batch_id)
 
-        submissions = sub_q.order_by(Submission.id.asc()).all()
+        submissions = sub_q.order_by(Submission.total_score.desc(), Submission.id.asc()).all()
         images = img_q.order_by(UploadedImage.id.asc()).all()
 
         total_pages = len(images) if images else len(submissions)
@@ -292,7 +319,7 @@ class ReportExporter:
                 c.setFont("Helvetica", 8.5)
 
             roll = sub.student.roll_number if sub.student else (sub.detected_roll_number or "N/A")
-            name = sub.student.name if sub.student else "Unassigned"
+            name = sub.student.name if sub.student else (sub.detected_student_name or "Unassigned")
             status_str = "DUPLICATE" if sub.is_duplicate else sub.status.value
 
             if idx % 2 == 0:
