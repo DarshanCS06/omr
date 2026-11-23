@@ -350,13 +350,14 @@ class OMRDetector:
         top_mean = float(np.mean(top_banner)) if top_banner.size > 0 else 255.0
         bot_mean = float(np.mean(bot_banner)) if bot_banner.size > 0 else 255.0
 
-        # Also check upper vs lower header density for standard sheets
-        top_header = gray_p[int(ph * 0.04):int(ph * 0.20), int(pw * 0.10):int(pw * 0.45)]
-        bot_header = gray_p[int(ph * 0.80):int(ph * 0.96), int(pw * 0.55):int(pw * 0.90)]
-        th_mean = float(np.mean(top_header)) if top_header.size > 0 else 255.0
-        bh_mean = float(np.mean(bot_header)) if bot_header.size > 0 else 255.0
+        # Full-width top 25% vs bottom 25% density (cancels out horizontal lighting gradients)
+        top_quarter = gray_p[:int(ph * 0.25), :]
+        bot_quarter = gray_p[int(ph * 0.75):, :]
+        tq_mean = float(np.mean(top_quarter)) if top_quarter.size > 0 else 255.0
+        bq_mean = float(np.mean(bot_quarter)) if bot_quarter.size > 0 else 255.0
+        norm_diff = (tq_mean - bq_mean) / max(1.0, tq_mean + bq_mean)
 
-        if (bot_mean < 160.0 and top_mean > 185.0) or (th_mean > 250.5 and bh_mean < 242.0):
+        if (bot_mean < 160.0 and top_mean > 185.0) or (norm_diff > 0.007 and (tq_mean - bq_mean) > 1.5):
             oriented = cv2.rotate(oriented, cv2.ROTATE_180)
             rotation_deg = (rotation_deg + 180) % 360
             was_tilted = True
@@ -811,6 +812,9 @@ class OMRDetector:
             # Sort by mean_contrast descending
             evaluated.sort(key=lambda x: x[1]["mean_contrast"], reverse=True)
 
+            all_mcs = [f["mean_contrast"] for _, f in evaluated]
+            min_mc = min(all_mcs) if all_mcs else 0.0
+
             # Check which bubbles in this column qualify as marked
             marked_candidates = []
             for d, feats in evaluated:
@@ -818,7 +822,10 @@ class OMRDetector:
                 mc = feats.get("mean_contrast", 0.0)
                 dpr = feats.get("dark_pixel_ratio", 0.0)
                 cdr = feats.get("core_dark_ratio", 0.0)
-                if status == "FILLED" or (dpr >= 0.38 and mc >= 0.25) or (cdr >= 0.35 and mc >= 0.20):
+                wpr = feats.get("white_pixel_ratio", 1.0)
+
+                # Shaded bubble has significant ink over printed baseline
+                if (mc >= 0.40 and dpr >= 0.45) or (mc - min_mc >= 0.22 and mc >= 0.35 and wpr <= 0.35) or (dpr >= 0.65 and mc >= 0.35):
                     marked_candidates.append((d, feats))
 
             if len(marked_candidates) == 0:
@@ -834,7 +841,7 @@ class OMRDetector:
                 runner_up_mc = max(other_mc) if other_mc else 0.0
                 margin = lead_f["mean_contrast"] - runner_up_mc
 
-                if margin >= 0.10 or lead_f["dark_pixel_ratio"] >= 0.48:
+                if margin >= 0.12 or lead_f["dark_pixel_ratio"] >= 0.50:
                     conf = min(1.0, max(0.85, 0.85 + margin))
                     col_digits.append(str(lead_d))
                     confidences.append(conf)
